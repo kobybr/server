@@ -46,6 +46,15 @@ static bool backup_flush(THD *thd);
 static bool backup_block_ddl(THD *thd);
 static bool backup_block_commit(THD *thd);
 
+static bool (*backup_handlers[])(THD *thd)=
+{
+  backup_start,
+  backup_flush,
+  backup_block_ddl,
+  backup_block_commit,
+  backup_end
+};
+
 /**
   Run next stage of backup
 */
@@ -94,38 +103,16 @@ bool run_backup_stage(THD *thd, backup_stages stage)
 
   do
   {
-    bool res;
-    backup_stages previous_stage= thd->current_backup_stage;
-    thd->current_backup_stage= next_stage;
-    switch (next_stage) {
-    case BACKUP_START:
-      if (!(res= backup_start(thd)))
-        break;
-      /* Reset backup stage to start for next backup try */
-      previous_stage= BACKUP_FINISHED;
-      break;
-    case BACKUP_FLUSH:
-      res= backup_flush(thd);
-      break;
-    case BACKUP_WAIT_FOR_FLUSH:
-      res= backup_block_ddl(thd);
-      break;
-    case BACKUP_LOCK_COMMIT:
-      res= backup_block_commit(thd);
-      break;
-    case BACKUP_END:
-      res= backup_end(thd);
-      break;
-    case BACKUP_FINISHED:
-      DBUG_ASSERT(0);
-      res= 0;
-    }
-    if (res)
+    DBUG_ASSERT(next_stage != BACKUP_FINISHED);
+    DBUG_ASSERT(thd->current_backup_stage == BACKUP_FINISHED ||
+                next_stage != BACKUP_START);
+    if (backup_handlers[next_stage](thd))
     {
-      thd->current_backup_stage= previous_stage;
       my_error(ER_BACKUP_STAGE_FAILED, MYF(0), stage_names[(uint) stage]);
       DBUG_RETURN(1);
     }
+    else if (next_stage != BACKUP_END)
+      thd->current_backup_stage= next_stage;
     next_stage= (backup_stages) ((uint) next_stage + 1);
   } while ((uint) next_stage <= (uint) stage);
 
@@ -148,10 +135,8 @@ static bool backup_start(THD *thd)
   MDL_request mdl_request;
   DBUG_ENTER("backup_start");
 
-  thd->current_backup_stage= BACKUP_FINISHED;   // For next test
   if (thd->has_read_only_protection())
     DBUG_RETURN(1);
-  thd->current_backup_stage= BACKUP_START;
 
   if (thd->locked_tables_mode)
   {

@@ -5223,7 +5223,7 @@ end_with_restore_list:
     }
     break;
   case SQLCOM_BACKUP:
-    if (check_global_access(thd,RELOAD_ACL))
+    if (check_global_access(thd, RELOAD_ACL))
       goto error;
     if (!(res= run_backup_stage(thd, lex->backup_stage)))
       my_ok(thd);

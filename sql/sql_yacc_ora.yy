@@ -14570,10 +14570,7 @@ backup:
             my_yyabort_error((ER_SP_BADSTATEMENT, MYF(0), "BACKUP STAGE"));
           if ((type= find_type($3.str, &backup_stage_names,
                                FIND_TYPE_NO_PREFIX)) <= 0)
-          {
-            my_error(ER_BACKUP_UNKNOWN_STAGE, MYF(0), $3.str);
-            MYSQL_YYABORT;
-          }
+            my_yyabort_error((ER_BACKUP_UNKNOWN_STAGE, MYF(0), $3.str));
           Lex->sql_command= SQLCOM_BACKUP;
           Lex->backup_stage= (backup_stages) (type-1);
           break;
