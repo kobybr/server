@@ -39,7 +39,6 @@ static const char *stage_names[]=
 TYPELIB backup_stage_names=
 { array_elements(stage_names)-1, "", stage_names, 0 };
 
-static bool backup_running;
 static MDL_ticket *backup_flush_ticket;
 
 static bool backup_start(THD *thd);
@@ -53,7 +52,6 @@ static bool backup_block_commit(THD *thd);
 
 void backup_init()
 {
-  backup_running= 0;
   backup_flush_ticket= 0;
 }
 
@@ -147,8 +145,8 @@ bool run_backup_stage(THD *thd, backup_stages stage)
 
 static bool backup_start(THD *thd)
 {
+  MDL_request mdl_request;
   DBUG_ENTER("backup_start");
-  PSI_stage_info saved_stage= {0, "", 0};
 
   thd->current_backup_stage= BACKUP_FINISHED;   // For next test
   if (thd->has_read_only_protection())
@@ -161,20 +159,12 @@ static bool backup_start(THD *thd)
     DBUG_RETURN(1);
   }
 
-  mysql_mutex_lock(&LOCK_backup);
-  thd->ENTER_COND(&COND_backup, &LOCK_backup, &stage_waiting_for_backup,
-                  &saved_stage);
-  while (backup_running && !thd->killed)
-    mysql_cond_wait(&COND_backup, &LOCK_backup);
-
-  if (thd->killed)
-  {
-    mysql_cond_signal(&COND_backup);
-    thd->EXIT_COND(&saved_stage);
+  mdl_request.init(MDL_key::BACKUP, "", "", MDL_BACKUP_START, MDL_EXPLICIT);
+  if (thd->mdl_context.acquire_lock(&mdl_request,
+                                    thd->variables.lock_wait_timeout))
     DBUG_RETURN(1);
-  }
-  backup_running= 1;
-  thd->EXIT_COND(&saved_stage);
+
+  backup_flush_ticket= mdl_request.ticket;
 
   ha_prepare_for_backup();
   DBUG_RETURN(0);
@@ -199,17 +189,14 @@ static bool backup_start(THD *thd)
 
 static bool backup_flush(THD *thd)
 {
-  MDL_request mdl_request;
   DBUG_ENTER("backup_flush");
   /*
     Lock all non transactional normal tables to be used in new DML's
   */
-  mdl_request.init(MDL_key::BACKUP, "", "", MDL_BACKUP_FLUSH,
-                   MDL_EXPLICIT);
-  if (thd->mdl_context.acquire_lock(&mdl_request,
-                                    thd->variables.lock_wait_timeout))
+  if (thd->mdl_context.upgrade_shared_lock(backup_flush_ticket,
+                                           MDL_BACKUP_FLUSH,
+                                           thd->variables.lock_wait_timeout))
     DBUG_RETURN(1);
-  backup_flush_ticket= mdl_request.ticket;
 
   purge_tables(false);  /* Flush unused tables and shares */
 
@@ -302,18 +289,9 @@ bool backup_end(THD *thd)
 
   if (thd->current_backup_stage != BACKUP_FINISHED)
   {
-    thd->current_backup_stage= BACKUP_FINISHED;
-    if (backup_flush_ticket)
-    {
-      thd->mdl_context.release_lock(backup_flush_ticket);
-      backup_flush_ticket= 0;
-    }
-
     ha_end_backup();
-    mysql_mutex_lock(&LOCK_backup);
-    backup_running= 0;
-    mysql_cond_signal(&COND_backup);
-    mysql_mutex_unlock(&LOCK_backup);
+    thd->current_backup_stage= BACKUP_FINISHED;
+    thd->mdl_context.release_lock(backup_flush_ticket);
   }
   DBUG_RETURN(0);
 }
